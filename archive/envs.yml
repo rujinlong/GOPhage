@@ -1,0 +1,16 @@
+name: base
+channels:
+  - pytorch
+  - nvidia
+  - bioconda
+  - conda-forge
+  - defaults
+dependencies:
+  - mmseqs2
+  - prodigal
+  - bedtools
+  - hmmer
+  - samtools
+  - pip:
+      - SemiBin
+      - vamb
