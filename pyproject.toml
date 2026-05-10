@@ -1,6 +1,6 @@
 [project]
 name = "gophage"
-version = "0.2.0"
+version = "0.3.0"
 description = "GOPhage: GO-term annotation for phage proteins via ESM2 + Transformer + DiamondBLASTp"
 readme = "README.md"
 authors = [

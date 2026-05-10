@@ -1,4 +1,9 @@
-"""Per-contig context-protein embedding assembly."""
+"""Per-contig context-protein embedding assembly.
+
+Per-protein ESM embeddings are read from `embedding_root` (shared across
+ontologies); per-contig sequence embeddings, name lists, and the location CSV
+are written into `work_dir` (ontology-specific subdirectory).
+"""
 
 from __future__ import annotations
 
@@ -8,22 +13,29 @@ from pathlib import Path
 import torch
 
 
+def _plm_paths(plm_model_name: str) -> tuple[str, str]:
+    """Return (per-protein dirname, sequence-embedding dirname suffix)."""
+    if plm_model_name == "esm2-12":
+        return "esm12_per_residual_embedding", "sequence_embedding_esm12"
+    if plm_model_name == "esm2-33":
+        return "esm33_per_residual_embedding", "sequence_embedding_esm33"
+    raise ValueError(f"Unknown PLM model name: {plm_model_name}")
+
+
 def preparing_context_protein_embedding(
-    plm_model_name: str, contig_sentence: Path, mid_dir: Path
+    plm_model_name: str,
+    contig_sentence: Path,
+    work_dir: Path,
+    embedding_root: Path,
 ) -> Path:
     """Concatenate per-protein embeddings into per-contig sequence embeddings.
 
     Returns the directory containing the per-contig .pt files.
     """
     print("Integrating the proteins embedding in the same contigs ...")
-    if plm_model_name == "esm2-12":
-        protein_embedding_path = mid_dir / "esm12_per_residual_embedding"
-        sequence_embedding_path = mid_dir / "sequence_embedding_esm12"
-    elif plm_model_name == "esm2-33":
-        protein_embedding_path = mid_dir / "esm33_per_residual_embedding"
-        sequence_embedding_path = mid_dir / "sequence_embedding_esm33"
-    else:
-        raise ValueError(f"Unknown PLM model name: {plm_model_name}")
+    per_protein_name, per_seq_name = _plm_paths(plm_model_name)
+    protein_embedding_path = embedding_root / per_protein_name
+    sequence_embedding_path = work_dir / per_seq_name
 
     if sequence_embedding_path.exists():
         shutil.rmtree(sequence_embedding_path)
@@ -53,11 +65,11 @@ def preparing_context_protein_embedding(
     return sequence_embedding_path
 
 
-def get_protein_names(contig_sentence: Path, mid_dir: Path) -> Path:
-    """Persist the protein-name list for each contig sentence."""
+def get_protein_names(contig_sentence: Path, work_dir: Path) -> Path:
+    """Persist the protein-name list for each contig sentence (in work_dir)."""
     print("Preparing the protein names ...")
 
-    protein_name_path = mid_dir / "protein_names"
+    protein_name_path = work_dir / "protein_names"
     if protein_name_path.exists():
         shutil.rmtree(protein_name_path)
     protein_name_path.mkdir(parents=True)
@@ -76,23 +88,29 @@ def get_protein_names(contig_sentence: Path, mid_dir: Path) -> Path:
 
 
 def get_sequence_location(
-    model_name: str, contig_sentence: Path, mid_dir: Path
+    model_name: str,
+    contig_sentence: Path,
+    work_dir: Path,
+    embedding_root: Path,
 ) -> Path:
-    """Write the (embedding_path, name_path) index CSV used by the dataloader."""
+    """Write the (embedding_path, name_path) index CSV used by the dataloader.
+
+    Multi-protein contigs reference per-contig embeddings under work_dir; the
+    1-protein fallback references the shared per-protein embedding directly
+    under embedding_root.
+    """
     print("Preparing the location of the embedding and protein names ...")
 
-    if model_name == "esm2-12":
-        sequence_embedding_path = mid_dir / "sequence_embedding_esm12"
-        protein_embedding_path = mid_dir / "esm12_per_residual_embedding"
-        location_csv = mid_dir / "test_location_esm12.csv"
-    elif model_name == "esm2-33":
-        sequence_embedding_path = mid_dir / "sequence_embedding_esm33"
-        protein_embedding_path = mid_dir / "esm33_per_residual_embedding"
-        location_csv = mid_dir / "test_location_esm33.csv"
-    else:
-        raise ValueError(f"Unknown PLM model name: {model_name}")
+    per_protein_name, per_seq_name = _plm_paths(model_name)
+    sequence_embedding_path = work_dir / per_seq_name
+    protein_embedding_path = embedding_root / per_protein_name
 
-    protein_name_dir = mid_dir / "protein_names"
+    if model_name == "esm2-12":
+        location_csv = work_dir / "test_location_esm12.csv"
+    else:
+        location_csv = work_dir / "test_location_esm33.csv"
+
+    protein_name_dir = work_dir / "protein_names"
 
     with contig_sentence.open() as src, location_csv.open("w") as dst:
         for lines in src:

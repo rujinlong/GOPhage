@@ -15,3 +15,13 @@ lives in `src/gophage/` and is invoked through the `gophage` CLI.
 
 Behaviour is preserved: model hyperparameters, alpha fusion weights, ontology
 length tables, and per-term thresholds match the originals.
+
+The new modules in `src/gophage/` add functionality not present in the old
+scripts:
+* `validate.py` — fail-fast check of the GOPhage data bundle layout.
+* `merged_output.py` — combined cross-ontology long-format CSV.
+* `--proteins` / `--protein-contig-map` paths in `preprocess.py` skip prodigal
+  when the user already has an annotated protein FASTA.
+* `embedding.py` caches per-protein `.pkl` files; re-runs on the same
+  `--mid-dir` skip already-embedded proteins.
+* `--device {auto,cuda,cpu}` to support CPU-only HPC nodes.

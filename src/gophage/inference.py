@@ -1,4 +1,9 @@
-"""GOPhage Transformer inference + diamond fusion + final CSV output."""
+"""GOPhage Transformer inference + diamond fusion + final CSV output.
+
+`work_dir` is the per-ontology subdirectory; intermediate and output files for
+this ontology live there. Model weights and threshold tables come from
+`data_dir` (the GOPhage data bundle root).
+"""
 
 from __future__ import annotations
 
@@ -23,8 +28,9 @@ def run_phaGO_model(
     plm_model_name: str,
     ont: str,
     batch_size: int,
-    mid_dir: Path,
+    work_dir: Path,
     data_dir: Path,
+    device: torch.device,
     num_workers: int = 2,
 ) -> Path:
     """Run PhaGO Transformer; return the path of the prediction pickle."""
@@ -33,15 +39,15 @@ def run_phaGO_model(
         d_model = 480
         dim_feedforward = 128 if ont == "CC" else 480
         model_name = data_dir / "PhaGO_model" / f"{ont}_PhaGO_base_model.th"
-        out_put_file = mid_dir / f"{ont}_phago_base_results.pkl"
-        data_file_input = mid_dir / "test_location_esm12.csv"
+        out_put_file = work_dir / f"{ont}_phago_base_results.pkl"
+        data_file_input = work_dir / "test_location_esm12.csv"
     elif plm_model_name == "esm2-33":
         nhead = 16
         d_model = 1280
         dim_feedforward = 320 if ont == "CC" else 1280
         model_name = data_dir / "PhaGO_model" / f"{ont}_PhaGO_large_model.th"
-        out_put_file = mid_dir / f"{ont}_phago_large_results.pkl"
-        data_file_input = mid_dir / "test_location_esm33.csv"
+        out_put_file = work_dir / f"{ont}_phago_large_results.pkl"
+        data_file_input = work_dir / "test_location_esm33.csv"
     else:
         raise ValueError(f"Unknown PLM model name: {plm_model_name}")
 
@@ -51,7 +57,6 @@ def run_phaGO_model(
             "See README for how to download the GOPhage data bundle."
         )
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     length = ONTOLOGY_LENGTH[ont]
 
     test_loader = get_combine_loader_cut_annot(
@@ -74,7 +79,7 @@ def run_phaGO_model(
     )
     net.load_state_dict(torch.load(str(model_name), map_location=device))
 
-    if torch.cuda.device_count() > 1:
+    if device.type == "cuda" and torch.cuda.device_count() > 1:
         print(f"Use {torch.cuda.device_count()} GPUs!\n")
         net = nn.DataParallel(net)
 
@@ -116,23 +121,23 @@ def run_phaGO_model(
 
 
 def combine_diamondblastp_phaGO(
-    plm_model_name: str, ont: str, mid_dir: Path
+    plm_model_name: str, ont: str, work_dir: Path
 ) -> Path:
     """Late-fuse diamond and PhaGO scores. Returns the fused pickle path."""
     if plm_model_name == "esm2-12":
         dict_onyology_alpha = {"BP": 1.0, "CC": 0.83, "MF": 0.91}
-        output_results = mid_dir / f"{ont}_phago_base_plus_results.pkl"
-        phago_prediction_results = mid_dir / f"{ont}_phago_base_results.pkl"
+        output_results = work_dir / f"{ont}_phago_base_plus_results.pkl"
+        phago_prediction_results = work_dir / f"{ont}_phago_base_results.pkl"
     elif plm_model_name == "esm2-33":
         dict_onyology_alpha = {"BP": 0.9, "CC": 0.62, "MF": 0.82}
-        output_results = mid_dir / f"{ont}_phago_large_plus_results.pkl"
-        phago_prediction_results = mid_dir / f"{ont}_phago_large_results.pkl"
+        output_results = work_dir / f"{ont}_phago_large_plus_results.pkl"
+        phago_prediction_results = work_dir / f"{ont}_phago_large_results.pkl"
     else:
         raise ValueError(f"Unknown PLM model name: {plm_model_name}")
 
     alpha_parameter = dict_onyology_alpha[ont]
 
-    diamond_blastp_result_file = mid_dir / f"{ont}_test_diamondblastp_results.pkl"
+    diamond_blastp_result_file = work_dir / f"{ont}_test_diamondblastp_results.pkl"
     test_df = pd.read_pickle(diamond_blastp_result_file)
     diamond_blastp_preds = test_df["prediction"]
     diamond_protein_name = test_df["protein_name"]
@@ -176,16 +181,16 @@ def combine_diamondblastp_phaGO(
 
 
 def output_the_prediction_results(
-    plm_model_name: str, ont: str, mid_dir: Path, data_dir: Path
+    plm_model_name: str, ont: str, work_dir: Path, data_dir: Path
 ) -> Path:
     """Apply per-term thresholds and write the final per-prediction CSV."""
     if plm_model_name == "esm2-12":
-        phagoplus_prediction_results = mid_dir / f"{ont}_phago_base_plus_results.pkl"
-        results_csv_name = mid_dir / f"{ont}_GOPhage_base_plus_prediction_labels.csv"
+        phagoplus_prediction_results = work_dir / f"{ont}_phago_base_plus_results.pkl"
+        results_csv_name = work_dir / f"{ont}_GOPhage_base_plus_prediction_labels.csv"
         threshold_file = data_dir / "PhaGO_model" / f"esm12_{ont}_label_threshold.csv"
     elif plm_model_name == "esm2-33":
-        phagoplus_prediction_results = mid_dir / f"{ont}_phago_large_plus_results.pkl"
-        results_csv_name = mid_dir / f"{ont}_GOPhage_large_plus_prediction_labels.csv"
+        phagoplus_prediction_results = work_dir / f"{ont}_phago_large_plus_results.pkl"
+        results_csv_name = work_dir / f"{ont}_GOPhage_large_plus_prediction_labels.csv"
         threshold_file = data_dir / "PhaGO_model" / f"esm33_{ont}_label_threshold.csv"
     else:
         raise ValueError(f"Unknown PLM model name: {plm_model_name}")

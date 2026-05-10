@@ -15,9 +15,9 @@ def read_test_protein(protein_fasta: Path) -> list[str]:
 
 
 def get_diamondscore(
-    ont: str, protein_fasta: Path, mid_dir: Path, data_dir: Path
+    ont: str, protein_fasta: Path, work_dir: Path, data_dir: Path
 ) -> Path:
-    """Compute Diamond-score-based GO prediction and pickle to mid_dir.
+    """Compute Diamond-score-based GO prediction and pickle to work_dir.
 
     Returns the pickle path.
     """
@@ -40,7 +40,7 @@ def get_diamondscore(
             dict_train_protein_go[train_protein] = final_label
 
     diamond_scores: dict[str, dict[str, float]] = {}
-    input_diamond_file = mid_dir / f"test_against_{ont}_database.txt"
+    input_diamond_file = work_dir / f"test_against_{ont}_database.txt"
     with input_diamond_file.open() as f:
         for line in f:
             it = line.strip().split("\t")
@@ -95,7 +95,7 @@ def get_diamondscore(
         "protein_name": test_protein_names,
     }
 
-    out_pkl = mid_dir / f"{ont}_test_diamondblastp_results.pkl"
+    out_pkl = work_dir / f"{ont}_test_diamondblastp_results.pkl"
     with out_pkl.open("wb") as handle:
         pickle.dump(test_results, handle)
     return out_pkl

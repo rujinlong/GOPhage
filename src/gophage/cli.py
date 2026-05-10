@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
+from typing import List, Optional
 
 import typer
 
@@ -20,6 +21,12 @@ class Ont(str, Enum):
     BP = "BP"
     CC = "CC"
     MF = "MF"
+
+
+class Device(str, Enum):
+    auto = "auto"
+    cuda = "cuda"
+    cpu = "cpu"
 
 
 app = typer.Typer(
@@ -51,13 +58,34 @@ def _root(
 
 @app.command("run")
 def run(
-    contigs: Path = typer.Option(
-        ...,
+    contigs: Optional[Path] = typer.Option(
+        None,
         "--contigs",
         exists=True,
         dir_okay=False,
         readable=True,
-        help="DNA FASTA file of contigs.",
+        help="DNA FASTA file of contigs (will run prodigal). "
+             "Mutually exclusive with --proteins.",
+    ),
+    proteins: Optional[Path] = typer.Option(
+        None,
+        "--proteins",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="Pre-translated protein FASTA (skips prodigal so your existing "
+             "annotation IDs are preserved). Proteins must be ordered by "
+             "genome position. Mutually exclusive with --contigs.",
+    ),
+    protein_contig_map: Optional[Path] = typer.Option(
+        None,
+        "--protein-contig-map",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help="TSV mapping (protein_id<TAB>contig_id) for use with --proteins. "
+             "If omitted, contig names are inferred by stripping the trailing "
+             "_<idx> from each protein id (prodigal convention).",
     ),
     plm: PLM = typer.Option(
         PLM.esm2_12,
@@ -65,32 +93,40 @@ def run(
         case_sensitive=False,
         help="ESM2 model size (esm2-12 -> base, esm2-33 -> large).",
     ),
-    ont: Ont = typer.Option(
-        Ont.CC,
+    ont: List[Ont] = typer.Option(
+        [Ont.BP, Ont.CC, Ont.MF],
         "--ont",
         case_sensitive=False,
-        help="GO ontology branch: BP, CC, or MF.",
+        help="GO ontology branch(es) to run. Repeat the flag to pick a subset, "
+             "e.g. `--ont BP --ont MF`. Defaults to running all three.",
     ),
     batch_size: int = typer.Option(8, "--batch-size", min=1, help="Batch size."),
     mid_dir: Path = typer.Option(
-        Path("CC_results"),
+        Path("gophage_results"),
         "--mid-dir",
-        help="Directory for intermediate + final outputs.",
+        help="Directory for intermediate + final outputs. "
+             "Per-ontology subdirectories will be created inside it.",
     ),
     threshold: float = typer.Option(
         0.1,
         "--threshold",
         min=0.0,
         max=1.0,
-        help="Score cutoff for the GO summary expansion step.",
+        help="Score cutoff applied to the merged long-format CSV and the "
+             "per-ontology summary CSVs.",
     ),
     data_dir: Path = typer.Option(
         Path("."),
         "--data-dir",
-        help=(
-            "Root directory containing DataBase/, ESM_model/, PhaGO_model/, "
-            "Protein_annotation/ and Term_label/."
-        ),
+        help="Root directory containing DataBase/, ESM_model/, PhaGO_model/, "
+             "Protein_annotation/ and Term_label/.",
+    ),
+    device: Device = typer.Option(
+        Device.auto,
+        "--device",
+        case_sensitive=False,
+        help="Compute device: auto (use CUDA if available), cuda (force GPU, "
+             "error if missing), or cpu.",
     ),
     diamond_threads: int = typer.Option(
         8, "--diamond-threads", min=1, help="Threads for diamond blastp."
@@ -100,18 +136,33 @@ def run(
     ),
 ) -> None:
     """Run the full GOPhage+ pipeline (prodigal -> diamond -> ESM2 -> PhaGO)."""
-    summary = run_pipeline(
+    # mutually-exclusive input checks (done here for nice typer error messages)
+    if (contigs is None) == (proteins is None):
+        raise typer.BadParameter(
+            "Provide exactly one of --contigs or --proteins."
+        )
+    if protein_contig_map is not None and proteins is None:
+        raise typer.BadParameter("--protein-contig-map requires --proteins.")
+
+    long_csv, per_ont_summaries = run_pipeline(
         contigs=contigs,
+        proteins=proteins,
+        protein_contig_map=protein_contig_map,
         plm=plm.value,
-        ont=ont.value,
+        ont_list=[o.value for o in ont],
         batch_size=batch_size,
         mid_dir=mid_dir,
         data_dir=data_dir,
         threshold=threshold,
         diamond_threads=diamond_threads,
         num_workers=num_workers,
+        device=device.value,
     )
-    typer.echo(f"Done. Summary written to: {summary}")
+
+    typer.echo("\nDone.")
+    typer.echo(f"  combined long-format CSV: {long_csv}")
+    for s in per_ont_summaries:
+        typer.echo(f"  per-ontology summary:    {s}")
 
 
 if __name__ == "__main__":

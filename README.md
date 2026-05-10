@@ -10,7 +10,7 @@ This branch ships GOPhage as an installable Python package with a [Typer](https:
 ## What you need
 
 1. **The GOPhage data bundle** (databases + ESM2 weights + PhaGO weights + GO obo file). Download once and bind-mount it into the container.
-2. **GPU drivers** on the host if you want CUDA inference (the container already ships CUDA 12.6 runtime libs and CUDA-enabled PyTorch).
+2. **GPU drivers** on the host if you want CUDA inference (the container already ships CUDA 12.6 runtime libs and CUDA-enabled PyTorch). The CLI also supports `--device cpu`.
 
 ### Download the data bundle
 
@@ -31,7 +31,7 @@ After extracting, the directory should look like:
 └── Term_label/                   # {BP,CC,MF}_term.pkl
 ```
 
-Pass that root path to `--data-dir` (it defaults to the current directory, which keeps backward compatibility with the original layout).
+Pass that root path via `--data-dir` (defaults to the current directory). Missing files are reported up-front before any expensive step runs.
 
 ## Install — option A: uv (recommended for local / HPC head node)
 
@@ -60,7 +60,6 @@ docker run --gpus all --rm \
   gophage:latest run \
     --contigs /work/test.fasta \
     --plm esm2-12 \
-    --ont BP \
     --mid-dir /work/results \
     --data-dir /work
 ```
@@ -74,31 +73,89 @@ gophage --help
 gophage run --help
 ```
 
-The pipeline runs prodigal → diamond blastp → ESM2 embedding → PhaGO Transformer → late fusion with diamond → per-term thresholding → GO ancestor expansion.
+The pipeline runs prodigal (or skips it, see below) → ESM2 embedding → diamond blastp → PhaGO Transformer → late fusion with diamond → per-term thresholding → GO ancestor expansion → merged long-format CSV.
 
-### Example
+### Two input modes
+
+| Flag | Behaviour |
+|---|---|
+| `--contigs DNA.fa` | Run prodigal to call ORFs, then run the rest of the pipeline. |
+| `--proteins proteins.fa` | **Skip prodigal.** Use your existing protein annotation directly — IDs and sequences are preserved, so downstream merges with your other tooling are trivial. |
+
+When using `--proteins`, GOPhage groups proteins by contig in one of two ways:
+
+* **Default**: contig name is inferred by stripping the trailing `_<idx>` from each protein id (the prodigal convention, e.g. `NC_104266.1_3` → `NC_104266.1`).
+* **`--protein-contig-map mapping.tsv`**: explicit two-column TSV (`protein_id<TAB>contig_id`). Use this when your IDs do not follow the prodigal pattern (NCBI WP_*, locus tags, etc.).
+
+In both cases proteins must appear in the FASTA in **genome order** — GOPhage relies on the spatial relationship between adjacent proteins on the same contig.
+
+### Ontologies
+
+`--ont` defaults to running all three branches (`BP CC MF`) in a single invocation, sharing prodigal output and the ESM2 embeddings across them so the expensive steps run only once. Pick a subset with `--ont BP --ont MF`.
+
+### Examples
 
 ```bash
+# (A) DNA contigs, run all three ontologies (default), GPU autodetect
 gophage run \
   --contigs test.fasta \
   --plm esm2-12 \
-  --ont BP \
-  --batch-size 8 \
-  --mid-dir BP_results \
-  --data-dir /path/to/data_bundle \
-  --threshold 0.1
+  --mid-dir BP_CC_MF_results \
+  --data-dir /path/to/data_bundle
+
+# (B) skip prodigal, use my existing protein annotation
+gophage run \
+  --proteins my_phage_proteins.faa \
+  --protein-contig-map my_protein_to_contig.tsv \
+  --ont BP --ont MF \
+  --plm esm2-33 \
+  --mid-dir results/ \
+  --device cpu \
+  --data-dir /path/to/data_bundle
 ```
 
 ### Outputs
 
-Inside `--mid-dir` you will find all intermediate artefacts plus the final CSVs:
+Inside `--mid-dir` you will find:
 
-| Model | Per-prediction CSV | Summary CSV |
-|---|---|---|
-| `esm2-12` | `<ONT>_GOPhage_base_plus_prediction_labels.csv` | `<ONT>_GOPhage_base_plus_prediction_labels_summary.csv` |
-| `esm2-33` | `<ONT>_GOPhage_large_plus_prediction_labels.csv` | `<ONT>_GOPhage_large_plus_prediction_labels_summary.csv` |
+```
+<mid_dir>/
+├── test_protein.fa                       # prodigal output (or copy of --proteins)
+├── test_contig_sentence.csv              # contig → proteins index
+├── esm12_per_residual_embedding/         # cached, reused on re-runs
+├── BP/  CC/  MF/                         # one work-dir per ontology
+│   ├── <ONT>_GOPhage_<base|large>_plus_prediction_labels.csv
+│   └── <ONT>_GOPhage_<base|large>_plus_prediction_labels_summary.csv
+└── gophage_predictions_long.csv          # merged across all ontologies
+```
 
-The per-prediction CSV has columns `Proteins, GO Term, Scores`. The summary CSV has columns `Protein_ID, GO_terms_and_Ancestors` and contains the GO term predictions expanded with all `is_a` / `part_of` ancestors.
+The **merged `gophage_predictions_long.csv`** is the recommended starting point for downstream analysis. Columns:
+
+| column | meaning |
+|---|---|
+| `protein` | protein id (yours when `--proteins`, prodigal's otherwise) |
+| `ontology` | `BP` / `CC` / `MF` |
+| `go_term` | GO ID |
+| `go_name` | human-readable name |
+| `namespace` | `biological_process` / `cellular_component` / `molecular_function` |
+| `score` | model score (after diamond fusion) |
+| `source` | `self` (predicted directly) or `ancestor` (propagated through is_a / part_of) |
+| `seed_term` | which directly-predicted GO term contributed this row |
+
+Within each `(protein, ontology, go_term)` triple, `self` annotations always override `ancestor` propagations and the maximum score is kept. Filter, group, and join in pandas / dplyr as you wish:
+
+```python
+import pandas as pd
+df = pd.read_csv("gophage_predictions_long.csv")
+df_self = df[df.source == "self"]                  # only direct predictions
+df_top = df.groupby("protein").score.max()         # best score per protein
+```
+
+The legacy per-ontology files are still written, so anything that consumed `<ONT>_GOPhage_*_summary.csv` keeps working.
+
+### Re-running on the same `--mid-dir`
+
+ESM2 per-residue embeddings are the slowest step. They are cached as one `.pkl` per protein under `<mid_dir>/esm{12,33}_per_residual_embedding/`; re-running with the same `--mid-dir` skips proteins whose embedding file already exists. Delete that directory if you want to force a re-embedding.
 
 ## Contact
 
